@@ -182,10 +182,13 @@
   #eq-display .ph { color: var(--text-muted); font-size: 0.7rem; font-family: var(--mono); font-style: italic; }
 
   /* Units */
-  #unit-block { min-width: 90px; }
-  #unit-selector { display: flex; gap: 6px; }
+  #unit-block { min-width: 110px; }
+  #unit-selector {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
   .unit-btn {
-    flex: 1;
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 4px;
@@ -425,15 +428,15 @@
   ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 </style>
 </head>
-<body>
+<body class="hc">
 
 <!-- ═══ TOP CONTROLS BAR ═══ -->
 <div id="top-bar">
 
   <div class="top-section" id="title-block">
     <h1>Reaction Slider</h1>
-    <p>log-linear mapping</p>
-    <button id="contrast-toggle" title="Toggle high contrast">☀</button>
+    <p>Karsten Theis/Claude</p>
+    <button id="contrast-toggle" title="Switch to dark theme">☾</button>
   </div>
 
   <div class="top-section" id="eq-block">
@@ -443,8 +446,10 @@
   </div>
 
   <div class="top-section" id="unit-block">
-    <div class="section-label">Units</div>
+    <div class="section-label">Mode/Units</div>
     <div id="unit-selector">
+      <div class="unit-btn" data-unit="mol">mol</div>
+      <div class="unit-btn" data-unit="mmol">mmol</div>
       <div class="unit-btn active" data-unit="M">M</div>
       <div class="unit-btn" data-unit="mM">mM</div>
     </div>
@@ -452,7 +457,7 @@
 
   <div class="top-section" id="conc-block">
     <div class="section-label2">
-      INITIAL CONCENTRATIONS
+      <span id="conc-section-label">INITIAL CONCENTRATIONS</span>
       <span id="conc-unit-tag" style="color:var(--amber);margin-left:6px">(M)</span>
     </div>
     <div id="conc-inputs">
@@ -502,10 +507,33 @@ const state = {
   species: [],
   initConc: {},
   unit: 'M',
+  mode: 'sem2',   // 'sem1' = chemical amounts (mol/mmol); 'sem2' = concentrations (M/mM)
   xiMin: 0,
   xiMax: 0,
   xi: 0,
 };
+
+// ══════════════════════════════════════
+// MODE HELPERS
+// ══════════════════════════════════════
+function modeForUnit(u) {
+  return (u === 'mol' || u === 'mmol') ? 'sem1' : 'sem2';
+}
+
+// In sem-2, solids and pure liquids are excluded from the ICE table mechanics
+// (no input, "pure" placeholder, ignored in xi bounds, factor of 1 in Q).
+// In sem-1 we work with chemical amounts, so they participate normally.
+function treatAsPure(sp) {
+  return sp.isPure && state.mode === 'sem2';
+}
+
+// Apply UI changes that depend on the mode (label text, Q visibility).
+function applyMode() {
+  document.getElementById('conc-section-label').textContent =
+    state.mode === 'sem1' ? 'INITIAL AMOUNTS' : 'INITIAL CONCENTRATIONS';
+  document.getElementById('q-block').style.display =
+    state.mode === 'sem1' ? 'none' : 'flex';
+}
 
 // ══════════════════════════════════════
 // FORMATTING
@@ -618,14 +646,27 @@ document.getElementById('eq-input').addEventListener('input', function () {
 });
 
 // ══════════════════════════════════════
-// UNIT SELECTOR
+// UNIT SELECTOR  (also serves as the sem-1 / sem-2 toggle)
 // ══════════════════════════════════════
 document.querySelectorAll('.unit-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.unit-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    state.unit = btn.dataset.unit;
+
+    const newUnit = btn.dataset.unit;
+    const newMode = modeForUnit(newUnit);
+    const modeChanged = newMode !== state.mode;
+
+    state.unit = newUnit;
+    state.mode = newMode;
     document.getElementById('conc-unit-tag').textContent = `(${state.unit})`;
+
+    if (modeChanged) {
+      applyMode();
+      // Pure-species inputs need to appear or disappear; rebuild conc inputs.
+      // Numerical values are preserved in state.initConc (carry over).
+      if (state.species.length > 0) buildConcInputs();
+    }
     rebuildAndUpdate();
   });
 });
@@ -652,7 +693,7 @@ function buildConcInputs() {
 
     card.appendChild(lbl);
 
-    if (sp.isPure) {
+    if (treatAsPure(sp)) {
       const pd = document.createElement('div');
       pd.className = 'conc-pure';
       pd.textContent = 'pure';
@@ -692,7 +733,8 @@ function buildConcInputs() {
 function calcXiBounds() {
   let xiMin = -Infinity, xiMax = Infinity;
   state.species.forEach(sp => {
-    if (sp.isPure) return;
+    if (treatAsPure(sp)) return;        // sem-2: solids/pure liquids don't constrain bounds
+                                        // sem-1: every species constrains bounds
     const I  = state.initConc[sp.name] || 0;
     const sc = sp.sign * sp.coeff;
     if      (sc > 0) xiMin = Math.max(xiMin, -I / sc);
@@ -818,7 +860,7 @@ function buildICETable() {
       const td = document.createElement('td');
       td.dataset.row  = key;
       td.dataset.name = sp.name;
-      if (sp.isPure) td.className = 'pure-cell';
+      if (treatAsPure(sp)) td.className = 'pure-cell';
       td.textContent = '—';
       tr.appendChild(td);
     });
@@ -841,7 +883,7 @@ function updateICERows(xi) {
     const cE = getCell('E', sp.name);
     if (!cI) return;
 
-    if (sp.isPure) {
+    if (treatAsPure(sp)) {
       cI.textContent = 'pure'; cC.textContent = '—'; cE.textContent = 'pure';
       return;
     }
@@ -864,20 +906,27 @@ function updateICERows(xi) {
 }
 
 // ══════════════════════════════════════
-// Q CALCULATION
+// Q CALCULATION  (sem-2 only — Q is not introduced in sem-1)
 // ══════════════════════════════════════
 function updateQ(xi) {
   const qVal     = document.getElementById('q-value');
   const qFormula = document.getElementById('q-formula');
+
+  if (state.mode === 'sem1') {
+    qVal.textContent = '—';
+    qFormula.textContent = '';
+    return;
+  }
+
   if (!state.species || state.species.length === 0) { qVal.textContent = '—'; qFormula.textContent = ''; return; }
 
   const scale = state.unit === 'mM' ? 1e-3 : 1;
 
   // Split into solution-phase (included in Q) and pure (excluded — contribute factor 1)
-  const solnReactants = state.species.filter(s => s.sign === -1 && !s.isPure);
-  const solnProducts  = state.species.filter(s => s.sign === +1 && !s.isPure);
-  const pureReactants = state.species.filter(s => s.sign === -1 &&  s.isPure);
-  const pureProducts  = state.species.filter(s => s.sign === +1 &&  s.isPure);
+  const solnReactants = state.species.filter(s => s.sign === -1 && !treatAsPure(s));
+  const solnProducts  = state.species.filter(s => s.sign === +1 && !treatAsPure(s));
+  const pureReactants = state.species.filter(s => s.sign === -1 &&  treatAsPure(s));
+  const pureProducts  = state.species.filter(s => s.sign === +1 &&  treatAsPure(s));
 
   // Need at least one reactant side and one product side (pure or solution)
   const hasReactants = solnReactants.length > 0 || pureReactants.length > 0;
@@ -958,6 +1007,11 @@ function clearTable() {
   document.getElementById('xi-min-label').textContent = '—';
   document.getElementById('xi-max-label').textContent = '—';
 }
+
+// ══════════════════════════════════════
+// INITIAL UI SYNC
+// ══════════════════════════════════════
+applyMode();
 </script>
 </body>
 </html>
